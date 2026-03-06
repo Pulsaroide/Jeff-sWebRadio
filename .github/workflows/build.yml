@@ -54,7 +54,7 @@ jobs:
           arduino-cli compile \
             --fqbn esp32:esp32:m5stack_cardputer \
             --output-dir ./build \
-            JeffsWebRadio/JeffsWebRadio.ino
+            JeffsWebRadio.ino
 
       # ── 8. Renomme le .bin proprement ───────────────────
       - name: Rename output
