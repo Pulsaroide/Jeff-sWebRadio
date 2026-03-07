@@ -29,7 +29,8 @@ jobs:
           arduino-cli lib install "M5Cardputer"
           arduino-cli lib install "WiFiManager"
           arduino-cli lib install "ArduinoJson"
-          git clone --depth=1 https://github.com/schreibfaul1/ESP32-audioI2S.git \
+          git clone --depth=1 --branch 3.0.13 \
+            https://github.com/schreibfaul1/ESP32-audioI2S.git \
             ~/Arduino/libraries/ESP32-audioI2S
 
       - name: Build firmware
