@@ -18,14 +18,11 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: Configure arduino-cli
+      - name: Configure and install platform
         run: |
           arduino-cli config init
           arduino-cli config add board_manager.additional_urls \
             https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-
-      - name: Install ESP32 platform
-        run: |
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@3.0.7
 
