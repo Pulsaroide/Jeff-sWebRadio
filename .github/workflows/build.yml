@@ -1,15 +1,12 @@
 name: Build JeffsWebRadio
-
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -46,16 +43,19 @@ jobs:
       - name: Compile firmware
         run: |
           mkdir -p build
-          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir ./build ${{ env.SKETCH }}
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app \
+            --output-dir ./build \
+            ${{ env.SKETCH }}
 
       - name: Prepare artifact
         run: |
-          find ./build -name "*.bin" ! -name "*.partitions.bin" ! -name "*bootloader*" | head -1 | xargs -I{} cp {} ./build/JeffsWebRadio-v1.0.bin
+          find ./build -name "*.bin" ! -name "*.partitions.bin" ! -name "*bootloader*" | head -1 | xargs -I{} cp {} ./build/JeffsWebRadio-v1.3.bin
           ls ./build/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: JeffsWebRadio-firmware
-          path: ./build/JeffsWebRadio-v1.0.bin
+          path: ./build/JeffsWebRadio-v1.3.bin
           retention-days: 30
