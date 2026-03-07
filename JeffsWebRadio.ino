@@ -1,10 +1,18 @@
 // ============================================================
-//  JEFF'S WEB RADIO — v1.9
+//  JEFF'S WEB RADIO — v2.0
 //  Pour M5Stack Cardputer ADV (ESP32-S3 / Stamp-S3A)
 //
 //  AUDIO : ESP32-audioI2S (schreibfaul1)
 //    → audio.setVolume(0-21) contrôle directement l'ES8311
-//    → Identique à l'approche du firmware WuSiU
+//
+//  CORRECTION v2.0 — PAS DE SON :
+//    L'ES8311 est un codec I2C. Il doit être initialisé via
+//    M5Unified (Speaker.begin) AVANT que l'I2S démarre.
+//    Sans ça, l'I2S envoie des données mais le codec est muet.
+//    Séquence correcte :
+//      1) M5Cardputer.Speaker.begin()  → réveille ES8311 via I2C
+//      2) M5Cardputer.Speaker.end()    → libère l'I2S pour Audio.h
+//      3) audio.setPinout() + connecttohost() → lecture
 //
 //  LIBRAIRIES (installées par le CI) :
 //    - M5Cardputer        (arduino-cli lib install)
@@ -54,7 +62,6 @@ struct Station {
 };
 
 Station STATIONS[] = {
-    { "Nostalgie",       "http://cdn.nrjaudio.fm/adwz1/fr/30601/mp3_128.mp3",              "" },
     { "FIP",             "http://icecast.radiofrance.fr/fip-midfi.mp3",                    "https://api.radiofrance.fr/livemeta/pull/7" },
     { "RP Main Mix",     "http://stream.radioparadise.com/mp3-128",                        "https://api.radioparadise.com/api/now_playing?block_id=0&format=json" },
     { "RP Rock Mix",     "http://stream.radioparadise.com/rock-128",                       "https://api.radioparadise.com/api/now_playing?block_id=2&format=json" },
@@ -210,6 +217,15 @@ void startStream() {
     statusMsg = "Connexion...";
     drawUI();
 
+    // ⚡ CRITIQUE — ES8311 est un codec I2C
+    // M5Unified doit l'initialiser via I2C (GPIO8/9) AVANT l'I2S
+    // Sinon le codec reste muet même si l'I2S envoie des données
+    M5Cardputer.Speaker.begin();   // init ES8311 via I2C
+    delay(50);
+    M5Cardputer.Speaker.end();     // libère l'I2S pour ESP32-audioI2S
+    delay(50);
+
+    // Maintenant l'ES8311 est réveillé, ESP32-audioI2S peut prendre le relais
     audio.setPinout(I2S_BCLK, I2S_LRCLK, I2S_DOUT);
     audio.setVolume(isMuted ? 0 : volume);
 
@@ -261,7 +277,7 @@ void drawHeader() {
     M5.Lcd.fillRect(0, HDR_Y, W, HDR_H, COL_HDR_BG);
     M5.Lcd.setTextFont(1); M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(COL_HDR_FG, COL_HDR_BG);
-    M5.Lcd.drawString(">> JEFF'S WEB RADIO v1.9", 4, HDR_Y + 4);
+    M5.Lcd.drawString(">> JEFF'S WEB RADIO v2.0", 4, HDR_Y + 4);
     bool wok = (WiFi.status() == WL_CONNECTED);
     M5.Lcd.setTextColor(wok ? COL_PLAY : COL_STOP, COL_HDR_BG);
     M5.Lcd.drawString(wok ? "WiFi" : "NoWi", W - 30, HDR_Y + 4);
@@ -403,7 +419,7 @@ void drawHelpScreen() {
     M5.Lcd.setTextFont(1); M5.Lcd.setTextSize(1);
     M5.Lcd.fillRect(0, 0, W, HDR_H, COL_HDR_BG);
     M5.Lcd.setTextColor(COL_HDR_FG, COL_HDR_BG);
-    M5.Lcd.drawString("  AIDE — JEFF'S WEB RADIO v1.9", 4, 4);
+    M5.Lcd.drawString("  AIDE — JEFF'S WEB RADIO v2.0", 4, 4);
 
     struct { const char* k; const char* d; } lines[] = {
         { "ENTER",   "Lancer / arreter la radio"    },
@@ -453,7 +469,7 @@ void startWiFiPortal() {
     M5.Lcd.drawString("Web Radio", 42, 34);
     M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(COL_SEL_FG, COL_BG);
-    M5.Lcd.drawString("v1.9  Cardputer ADV", 42, 66);
+    M5.Lcd.drawString("v2.0  Cardputer ADV", 42, 66);
     M5.Lcd.setTextColor(COL_DIM, COL_BG);
     M5.Lcd.drawString("WiFi AP: JeffsRadio-Setup", 24, 82);
     M5.Lcd.drawString("puis 192.168.4.1", 52, 96);
@@ -550,13 +566,20 @@ void setup() {
     M5.Lcd.drawString("Web Radio", 42, 40);
     M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(COL_DIM, COL_BG);
-    M5.Lcd.drawString("v1.9  Cardputer ADV", 42, 80);
+    M5.Lcd.drawString("v2.0  Cardputer ADV", 42, 80);
     M5.Lcd.setTextColor(COL_SEL_FG, COL_BG);
     M5.Lcd.drawString("by Jeff  (powered by Claude)", 20, 96);
     delay(1800);
 
     startWiFiPortal();
 
+    // Init ES8311 via M5Unified pour le réveiller
+    M5Cardputer.Speaker.begin();
+    delay(100);
+    M5Cardputer.Speaker.end();
+    delay(100);
+
+    // Pré-configure l'audio (sans connecter)
     audio.setPinout(I2S_BCLK, I2S_LRCLK, I2S_DOUT);
     audio.setVolume(volume);
 
