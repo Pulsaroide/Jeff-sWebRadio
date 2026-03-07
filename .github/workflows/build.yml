@@ -1,38 +1,42 @@
-name: Build JeffsWebRadio
+name: Build JeffsWebRadio Firmware
+
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Arduino CLI
+      - name: Setup Arduino CLI
         uses: arduino/setup-arduino-cli@v1
+        with:
+          version: "0.x"
 
-      - name: Configure Arduino CLI
+      - name: Configure Arduino CLI + install ESP32 core
         run: |
           arduino-cli config init --overwrite
           arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-
-      - name: Install ESP32 platform
-        run: |
           arduino-cli core update-index
           arduino-cli core install esp32:esp32
 
-      - name: Install libraries
+      - name: Install libraries via arduino-cli
         run: |
           arduino-cli lib install "M5Cardputer"
           arduino-cli lib install "WiFiManager"
           arduino-cli lib install "ArduinoJson"
 
-      - name: Install ESP8266Audio
+      - name: Install ESP32-audioI2S via git clone
         run: |
           mkdir -p ~/Arduino/libraries
-          git clone --depth=1 https://github.com/earlephilhower/ESP8266Audio.git ~/Arduino/libraries/ESP8266Audio
+          git clone --depth=1 https://github.com/schreibfaul1/ESP32-audioI2S.git ~/Arduino/libraries/ESP32-audioI2S
 
       - name: Find sketch
         run: |
@@ -46,16 +50,16 @@ jobs:
           arduino-cli compile \
             --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app \
             --output-dir ./build \
-            ${{ env.SKETCH }}
+            ./JeffsWebRadio.ino
 
-      - name: Prepare artifact
+      - name: Rename binary
         run: |
-          find ./build -name "*.bin" ! -name "*.partitions.bin" ! -name "*bootloader*" | head -1 | xargs -I{} cp {} ./build/JeffsWebRadio-v1.3.bin
+          find ./build -name "*.bin" ! -name "*.partitions.bin" ! -name "*bootloader*" | head -1 | xargs -I{} cp {} ./build/JeffsWebRadio-v1.9.bin
           ls ./build/
 
-      - name: Upload artifact
+      - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: JeffsWebRadio-firmware
-          path: ./build/JeffsWebRadio-v1.3.bin
+          path: ./build/JeffsWebRadio-v1.9.bin
           retention-days: 30
