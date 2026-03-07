@@ -1,4 +1,4 @@
-name: Build JeffsWebRadio Firmware
+name: Build JeffsWebRadio
 
 on:
   push:
@@ -10,56 +10,42 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Arduino CLI
-        uses: arduino/setup-arduino-cli@v1
-        with:
-          version: "0.x"
-
-      - name: Configure Arduino CLI + install ESP32 core
+      - name: Install arduino-cli
         run: |
-          arduino-cli config init --overwrite
-          arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          arduino-cli core update-index
-          arduino-cli core install esp32:esp32
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: Install libraries via arduino-cli
+      - name: Configure arduino-cli
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+
+      - name: Install ESP32 platform
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.0.7
+
+      - name: Install libraries
         run: |
           arduino-cli lib install "M5Cardputer"
           arduino-cli lib install "WiFiManager"
           arduino-cli lib install "ArduinoJson"
+          git clone --depth=1 https://github.com/schreibfaul1/ESP32-audioI2S.git \
+            ~/Arduino/libraries/ESP32-audioI2S
 
-      - name: Install ESP32-audioI2S via git clone
+      - name: Build firmware
         run: |
-          mkdir -p ~/Arduino/libraries
-          git clone --depth=1 https://github.com/schreibfaul1/ESP32-audioI2S.git ~/Arduino/libraries/ESP32-audioI2S
-
-      - name: Find sketch
-        run: |
-          SKETCH=$(find . -maxdepth 1 -name "*.ino" | head -1)
-          echo "SKETCH=$SKETCH" >> $GITHUB_ENV
-          echo "Found: $SKETCH"
-
-      - name: Compile firmware
-        run: |
-          mkdir -p build
           arduino-cli compile \
             --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app \
             --output-dir ./build \
-            ./JeffsWebRadio.ino
-
-      - name: Rename binary
-        run: |
-          find ./build -name "*.bin" ! -name "*.partitions.bin" ! -name "*bootloader*" | head -1 | xargs -I{} cp {} ./build/JeffsWebRadio-v1.9.bin
-          ls ./build/
+            JeffsWebRadio/JeffsWebRadio.ino
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JeffsWebRadio-firmware
-          path: ./build/JeffsWebRadio-v1.9.bin
-          retention-days: 30
+          name: JeffsWebRadio-v2.2
+          path: build/*.bin
