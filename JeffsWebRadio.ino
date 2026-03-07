@@ -159,25 +159,37 @@ void handleStreamTitle(const char* info) {
 }
 
 // ============================================================
-//  CALLBACKS ESP32-audioI2S v3.2.1
-//  Nouveau style : Audio::msg_t — enregistré dans setup()
+//  CALLBACKS ESP32-audioI2S v3.2.1 — fonctions globales
 // ============================================================
-void my_audio_info(Audio::msg_t m) {
-    if (!m.msg) return;
-    switch (m.e) {
-        case Audio::evt_stream_title:
-            handleStreamTitle(m.msg);
-            break;
-        case Audio::evt_eof_stream:
-            if (isPlaying) {
-                statusMsg = "Reconnexion...";
-                drawMetaBand();
-                delay(2000);
-                startStream();
-            }
-            break;
-        default:
-            break;
+void audio_info(const char* info) { }
+
+void audio_showstreamtitle(const char* info) {
+    if (!info || strlen(info) == 0) return;
+    String title(info);
+    int sep = title.indexOf(" - ");
+    if (sep > 0) {
+        nowArtist  = title.substring(0, sep);
+        nowPlaying = title.substring(sep + 3);
+    } else {
+        nowArtist  = "";
+        nowPlaying = title;
+    }
+    tickerOffset = 0;
+    drawMetaBand();
+}
+
+void audio_showstation(const char* info) { }
+
+void audio_id3data(const char* info) {
+    handleStreamTitle(info);
+}
+
+void audio_eof_stream(const char* info) {
+    if (isPlaying) {
+        statusMsg = "Reconnexion...";
+        drawMetaBand();
+        delay(2000);
+        startStream();
     }
 }
 
@@ -507,9 +519,6 @@ void setup() {
     delay(1800);
 
     startWiFiPortal();
-
-    // Enregistrement callback (doit être avant setPinout)
-    Audio::audio_info_callback = my_audio_info;
 
     // Init audio pins
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
