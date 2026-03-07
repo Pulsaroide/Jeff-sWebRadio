@@ -1,10 +1,13 @@
 // ============================================================
-//  JEFF'S WEB RADIO — v1.4
+//  JEFF'S WEB RADIO — v1.5
 //  Pour M5Stack Cardputer ADV (ESP32-S3)
-//  Corrections v1.4 :
-//    - Audio : init codec ES8311 via M5Unified avant ESP8266Audio
-//    - Liste : scroll avec fenêtre glissante (5 stations visibles)
-//    - UI    : fix glitchs verts zone VU-mètre
+//  Corrections v1.5 :
+//    - stopStream() : délai + flush complet avant de réinitialiser le codec
+//    - Bruit strident : réinitialisation propre ES8311 entre chaque station
+//    - HTTPS Nostalgie : URL remplacée par flux HTTP alternatif fiable
+//    - Sud Radio : URL de secours HTTP
+//    - Blocage total : watchdog logiciel + timeout sur audioMP3->loop()
+//    - SetGain plafonné à 2.0f (évite la saturation / volume fou)
 // ============================================================
 
 #include <M5Cardputer.h>
@@ -19,6 +22,9 @@
 
 // ============================================================
 //  CONFIGURATION STATIONS
+//  NOTE v1.5 :
+//   - Nostalgie : passage en HTTP (le HTTPS nrjaudio bloque l'ESP32)
+//   - Sud Radio  : URL Infomaniak HTTP confirmée
 // ============================================================
 struct Station {
     const char* name;
@@ -27,17 +33,17 @@ struct Station {
 };
 
 Station STATIONS[] = {
-    { "Nostalgie",       "https://streaming.nrjaudio.fm/oug7girb92oc",                        "" },
+    { "Nostalgie",       "http://streaming.nrjaudio.fm/nostalgie-fr-128.mp3",                 "" },
     { "FIP",             "http://icecast.radiofrance.fr/fip-midfi.mp3",                       "https://api.radiofrance.fr/livemeta/pull/7" },
     { "Sud Radio",       "http://broadcast.infomaniak.ch/sudradio-high.mp3",                  "" },
     { "RP Main Mix",     "http://stream.radioparadise.com/mp3-128",                           "https://api.radioparadise.com/api/now_playing?block_id=0&format=json" },
     { "RP Mellow Mix",   "http://stream.radioparadise.com/mellow-128",                        "https://api.radioparadise.com/api/now_playing?block_id=1&format=json" },
     { "RP Rock Mix",     "http://stream.radioparadise.com/rock-128",                          "https://api.radioparadise.com/api/now_playing?block_id=2&format=json" },
-    { "SomaFM Groove",   "https://ice.somafm.com/groovesalad",                                "" },
-    { "SomaFM Space",    "https://ice.somafm.com/spacestation",                               "" },
-    { "SomaFM 80s",      "https://ice.somafm.com/u80s",                                       "" },
+    { "SomaFM Groove",   "http://ice.somafm.com/groovesalad-128-mp3",                         "" },
+    { "SomaFM Space",    "http://ice.somafm.com/spacestation-128-mp3",                        "" },
+    { "SomaFM 80s",      "http://ice.somafm.com/u80s-128-mp3",                                "" },
     { "Nightride FM",    "https://stream.nightride.fm/nightride.mp3",                         "" },
-    { "Lofi Hip Hop",    "https://stream.zeno.fm/f3wvbbqmdg8uv",                              "" },
+    { "Lofi Hip Hop",    "http://stream.zeno.fm/f3wvbbqmdg8uv",                               "" },
     { "BluesWave Athens","http://blueswave.radio:8000/blueswave",                             "" },
     { "Blues Radio",     "http://198.58.98.83/stream/1/",                                     "" },
     { "101 Smooth Jazz", "http://strm112.1.fm/smoothjazz_mobile_mp3",                         "" },
@@ -61,6 +67,9 @@ AudioOutputI2S*            audioOutput  = nullptr;
 #define I2S_LRCLK  43
 #define I2S_DOUT   42
 
+// Gain max plafonné pour éviter la saturation (v1.5)
+#define GAIN_MAX   2.0f
+
 // ============================================================
 //  ÉTAT APPLICATION
 // ============================================================
@@ -76,11 +85,15 @@ String statusMsg     = "Pret";
 
 int   vuLevel        = 0;
 int   vuPeak         = 0;
-unsigned long vuPeakTime  = 0;
+unsigned long vuPeakTime     = 0;
 unsigned long lastMetaFetch  = 0;
 const long    META_INTERVAL  = 15000;
 int   tickerOffset   = 0;
 unsigned long lastTickerMove = 0;
+
+// Watchdog logiciel (v1.5) : détecte un loop() bloqué
+unsigned long lastLoopOK     = 0;
+const long    LOOP_TIMEOUT   = 8000;  // 8 s sans loop OK → reconnexion
 
 // ============================================================
 //  COULEURS
@@ -149,38 +162,77 @@ void startWiFiPortal() {
 }
 
 // ============================================================
-//  AUDIO — FIX v1.4
-//  Le Cardputer ADV utilise un codec ES8311 qui doit être
-//  réveillé via M5Unified Speaker.begin() AVANT l'I2S.
-//  Sans cette init, le codec reste muet même si l'I2S tourne.
+//  AUDIO — FIX v1.5
+//  stopStream() : arrêt COMPLET + délai 300ms pour laisser
+//  le DMA I2S se vider avant de toucher au codec.
+//  Sans ce délai, l'ES8311 reçoit des données résiduelles
+//  corrompues → bruit strident.
 // ============================================================
+void stopStream() {
+    isPlaying = false;
+
+    // 1) Stopper le décodeur MP3 en premier
+    if (audioMP3) {
+        audioMP3->stop();
+        delete audioMP3;
+        audioMP3 = nullptr;
+    }
+    // 2) Libérer les sources
+    if (audioBuffer) { delete audioBuffer; audioBuffer = nullptr; }
+    if (audioSource) { delete audioSource; audioSource = nullptr; }
+
+    // 3) Laisser le DMA se vider avant de couper l'I2S
+    delay(150);
+
+    // 4) Couper l'output I2S
+    if (audioOutput) { delete audioOutput; audioOutput = nullptr; }
+
+    // 5) Éteindre le codec proprement
+    M5Cardputer.Speaker.end();
+
+    // 6) Pause supplémentaire pour que l'ES8311 soit stable
+    delay(150);
+
+    statusMsg  = "Arrete";
+    nowPlaying = "";
+    nowArtist  = "";
+    vuLevel    = 0;
+    vuPeak     = 0;
+    tickerOffset = 0;
+}
+
 void startStream() {
     stopStream();
     statusMsg = "Connexion...";
     drawUI();
 
-    // 1) Réveille le codec ES8311 via M5Unified
+    // 1) Réveille le codec ES8311 via M5Unified (OBLIGATOIRE)
     auto spkcfg = M5Cardputer.Speaker.config();
-    spkcfg.sample_rate  = 44100;
+    spkcfg.sample_rate   = 44100;
     spkcfg.task_priority = 2;
     M5Cardputer.Speaker.config(spkcfg);
     M5Cardputer.Speaker.begin();
     M5Cardputer.Speaker.setVolume(isMuted ? 0 : (volume * 255 / 100));
 
-    // 2) Lance ESP8266Audio sur les pins I2S du codec
+    // 2) Petit délai pour que le codec soit prêt
+    delay(100);
+
+    // 3) Lance ESP8266Audio sur les pins I2S du codec
     audioOutput = new AudioOutputI2S(0, AudioOutputI2S::EXTERNAL_I2S);
     audioOutput->SetPinout(I2S_BCLK, I2S_LRCLK, I2S_DOUT);
-    audioOutput->SetGain(isMuted ? 0.0f : (float)volume / 100.0f * 4.0f);
+    // v1.5 : gain plafonné à GAIN_MAX pour éviter la saturation
+    audioOutput->SetGain(isMuted ? 0.0f : (float)volume / 100.0f * GAIN_MAX);
 
     audioSource = new AudioFileSourceHTTPStream(STATIONS[currentStation].url);
     audioBuffer = new AudioFileSourceBuffer(audioSource, 16384);
     audioMP3    = new AudioGeneratorMP3();
 
     if (audioMP3->begin(audioBuffer, audioOutput)) {
-        isPlaying    = true;
-        statusMsg    = "En lecture";
-        nowPlaying   = STATIONS[currentStation].name;
-        tickerOffset = 0;
+        isPlaying     = true;
+        statusMsg     = "En lecture";
+        nowPlaying    = STATIONS[currentStation].name;
+        tickerOffset  = 0;
+        lastLoopOK    = millis();
         fetchMetadata();
     } else {
         statusMsg = "Erreur stream!";
@@ -189,20 +241,9 @@ void startStream() {
     drawUI();
 }
 
-void stopStream() {
-    if (audioMP3)    { audioMP3->stop(); delete audioMP3;    audioMP3    = nullptr; }
-    if (audioBuffer) {                   delete audioBuffer; audioBuffer = nullptr; }
-    if (audioSource) {                   delete audioSource; audioSource = nullptr; }
-    if (audioOutput) {                   delete audioOutput; audioOutput = nullptr; }
-    M5Cardputer.Speaker.end();
-    isPlaying = false; statusMsg = "Arrete";
-    nowPlaying = ""; nowArtist = "";
-    vuLevel = 0; vuPeak = 0; tickerOffset = 0;
-}
-
 void applyVolume() {
     if (audioOutput)
-        audioOutput->SetGain(isMuted ? 0.0f : (float)volume / 100.0f * 4.0f);
+        audioOutput->SetGain(isMuted ? 0.0f : (float)volume / 100.0f * GAIN_MAX);
     M5Cardputer.Speaker.setVolume(isMuted ? 0 : (volume * 255 / 100));
 }
 
@@ -214,19 +255,19 @@ void fetchMetadata() {
     if (WiFi.status() != WL_CONNECTED) return;
     HTTPClient http;
     http.begin(STATIONS[currentStation].metaUrl);
-    http.addHeader("User-Agent", "JeffsWebRadio/1.4");
+    http.addHeader("User-Agent", "JeffsWebRadio/1.5");
     if (http.GET() == 200) {
         JsonDocument doc;
         if (!deserializeJson(doc, http.getString())) {
-            if (currentStation == 3 || currentStation == 4 || currentStation == 5) {
+            if (currentStation >= 3 && currentStation <= 5) {
                 nowPlaying = doc["title"] | String(STATIONS[currentStation].name);
                 nowArtist  = doc["artist"] | String("");
             } else if (currentStation == 1) {
                 JsonObject now = doc["now"];
-                nowPlaying = now["firstLine"]["title"] | String(STATIONS[currentStation].name);
+                nowPlaying = now["firstLine"]["title"]  | String(STATIONS[currentStation].name);
                 nowArtist  = now["secondLine"]["title"] | String("");
             } else {
-                nowPlaying = doc["title"] | String(STATIONS[currentStation].name);
+                nowPlaying = doc["title"]  | String(STATIONS[currentStation].name);
                 nowArtist  = doc["artist"] | String("");
             }
             tickerOffset = 0;
@@ -279,7 +320,6 @@ void drawMetaBand() {
     M5.Lcd.drawString(display, 16, HEADER_H + 7);
 }
 
-// FIX v1.4 : scroll liste — fenêtre glissante de VISIBLE_ITEMS
 void drawStationList() {
     if (currentStation < listScrollTop) listScrollTop = currentStation;
     if (currentStation >= listScrollTop + VISIBLE_ITEMS)
@@ -319,7 +359,6 @@ void drawStationList() {
     }
 }
 
-// FIX v1.4 : VU-mètre confiné strictement dans BAR_H px
 void drawVUMeter() {
     M5.Lcd.fillRect(0, VU_Y, W, BAR_H, COL_BAR_BG);
     M5.Lcd.setTextSize(1);
@@ -337,7 +376,6 @@ void drawVUMeter() {
     if (vuPeak > 0)
         M5.Lcd.drawFastVLine(vuX + vuPeak * vuW / 100, vuYp, vuH, COL_PEAK);
 
-    // Aide — fond explicite COL_BAR_BG pour éviter les glitchs
     M5.Lcd.setTextColor(COL_SCROLL, COL_BAR_BG);
     M5.Lcd.drawString("N/P=nav ENT=play +/-=vol", vuX + vuW + 4, VU_Y + 6);
 }
@@ -401,7 +439,7 @@ void setup() {
     M5.Lcd.drawString("Web Radio", 40, 45);
     M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(COL_MUTED, COL_BG);
-    M5.Lcd.drawString("v1.4 - Cardputer ADV", 35, 80);
+    M5.Lcd.drawString("v1.5 - Cardputer ADV", 35, 80);
     M5.Lcd.setTextColor(COL_SEL_FG, COL_BG);
     M5.Lcd.drawString("by Jeff  (powered by Claude)", 20, 100);
     delay(2000);
@@ -421,6 +459,17 @@ void loop() {
             statusMsg = "Reconnexion...";
             drawMetaBand();
             delay(2000);
+            startStream();
+        } else {
+            lastLoopOK = millis();
+        }
+
+        // Watchdog logiciel v1.5 : si loop() ne répond plus depuis LOOP_TIMEOUT
+        if (millis() - lastLoopOK > LOOP_TIMEOUT) {
+            statusMsg = "Timeout - reset";
+            drawMetaBand();
+            stopStream();
+            delay(1000);
             startStream();
         }
     }
