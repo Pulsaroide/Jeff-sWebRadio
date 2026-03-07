@@ -2,11 +2,8 @@
 //  JEFF'S WEB RADIO — v2.2
 //  Pour M5Stack Cardputer ADV (ESP32-S3 / Stamp-S3A)
 //
-//  FIX v2.2 : La version récente d'ESP32-audioI2S a changé
-//  la signature des callbacks ! L'ancienne API globale
-//  (audio_info, audio_id3data...) peut ne pas fonctionner.
-//  → On utilise le NOUVEAU style avec Audio::audio_info_callback
-//    ET on garde l'ancien style en fallback.
+//  CALLBACKS : fonctions globales audio_info, audio_id3data,
+//  audio_showstreamtitle, audio_eof_stream reconnues par la lib.
 //
 //  AUDIO : ESP32-audioI2S (schreibfaul1)
 //  Pins Cardputer ADV : BCLK=41, LRC=43, DOUT=42
@@ -162,53 +159,25 @@ void handleStreamTitle(const char* info) {
 }
 
 // ============================================================
-//  CALLBACKS — NOUVEAU STYLE (ESP32-audioI2S v3.x récent)
-//  Enregistrés via Audio::audio_info_callback dans setup()
+//  CALLBACKS ESP32-audioI2S v3.2.1
+//  Nouveau style : Audio::msg_t — enregistré dans setup()
 // ============================================================
 void my_audio_info(Audio::msg_t m) {
-    // Toutes les infos passent ici dans la version récente
-    if (m.msg) handleStreamTitle(m.msg);
-}
-
-// ============================================================
-//  CALLBACKS — ANCIEN STYLE (ESP32-audioI2S v2.x / cyberwisk)
-//  Fonctions globales reconnues automatiquement
-// ============================================================
-void audio_info(const char* info) {
-    // silencieux
-}
-
-void audio_id3data(const char* info) {
-    handleStreamTitle(info);
-}
-
-void audio_showstation(const char* info) {
-    // Nom de la station ICY
-}
-
-void audio_showstreamtitle(const char* info) {
-    // Titre du stream ICY — certaines versions appellent ça
-    if (info && strlen(info) > 0) {
-        String title(info);
-        int sep = title.indexOf(" - ");
-        if (sep > 0) {
-            nowArtist  = title.substring(0, sep);
-            nowPlaying = title.substring(sep + 3);
-        } else {
-            nowArtist  = "";
-            nowPlaying = title;
-        }
-        tickerOffset = 0;
-        drawMetaBand();
-    }
-}
-
-void audio_eof_stream(const char* info) {
-    if (isPlaying) {
-        statusMsg = "Reconnexion...";
-        drawMetaBand();
-        delay(2000);
-        startStream();
+    if (!m.msg) return;
+    switch (m.e) {
+        case Audio::evt_stream_title:
+            handleStreamTitle(m.msg);
+            break;
+        case Audio::evt_eof_stream:
+            if (isPlaying) {
+                statusMsg = "Reconnexion...";
+                drawMetaBand();
+                delay(2000);
+                startStream();
+            }
+            break;
+        default:
+            break;
     }
 }
 
@@ -539,9 +508,7 @@ void setup() {
 
     startWiFiPortal();
 
-    // Enregistrement callback nouveau style (v3.x)
-    // Si la version installée ne supporte pas Audio::msg_t,
-    // cette ligne ne compilera pas → commenter si besoin
+    // Enregistrement callback (doit être avant setPinout)
     Audio::audio_info_callback = my_audio_info;
 
     // Init audio pins
