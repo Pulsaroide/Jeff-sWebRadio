@@ -1,36 +1,34 @@
 // ============================================================
-//  JEFF'S WEB RADIO — v2.0
+//  JEFF'S WEB RADIO — v2.2
 //  Pour M5Stack Cardputer ADV (ESP32-S3 / Stamp-S3A)
 //
+//  FIX v2.2 : La version récente d'ESP32-audioI2S a changé
+//  la signature des callbacks ! L'ancienne API globale
+//  (audio_info, audio_id3data...) peut ne pas fonctionner.
+//  → On utilise le NOUVEAU style avec Audio::audio_info_callback
+//    ET on garde l'ancien style en fallback.
+//
 //  AUDIO : ESP32-audioI2S (schreibfaul1)
-//    → audio.setVolume(0-21) contrôle directement l'ES8311
+//  Pins Cardputer ADV : BCLK=41, LRC=43, DOUT=42
+//  setPinout(BCLK, LRC, DOUT)
 //
-//  CORRECTION v2.0 — PAS DE SON :
-//    L'ES8311 est un codec I2C. Il doit être initialisé via
-//    M5Unified (Speaker.begin) AVANT que l'I2S démarre.
-//    Sans ça, l'I2S envoie des données mais le codec est muet.
-//    Séquence correcte :
-//      1) M5Cardputer.Speaker.begin()  → réveille ES8311 via I2C
-//      2) M5Cardputer.Speaker.end()    → libère l'I2S pour Audio.h
-//      3) audio.setPinout() + connecttohost() → lecture
+//  LIBRAIRIES CI :
+//    arduino-cli lib install "M5Cardputer"
+//    arduino-cli lib install "WiFiManager"
+//    arduino-cli lib install "ArduinoJson"
+//    git clone https://github.com/schreibfaul1/ESP32-audioI2S
 //
-//  LIBRAIRIES (installées par le CI) :
-//    - M5Cardputer        (arduino-cli lib install)
-//    - WiFiManager        (arduino-cli lib install)
-//    - ArduinoJson        (arduino-cli lib install)
-//    - ESP32-audioI2S     (git clone schreibfaul1)
-//
-//  PARTITION : huge_app (3MB No OTA / 1MB SPIFFS)
+//  PARTITION : huge_app (3MB No OTA)
 //
 //  CONTROLES :
-//    ENTER    → Play / Stop
-//    N / P    → Station suivante / précédente
-//    +  / =   → Volume +1  (0-21)
-//    -        → Volume -1
-//    M        → Mute / Unmute
-//    R        → Recharger metadata
-//    S        → Stop forcé
-//    ?        → Aide
+//    ENTER  → Play / Stop
+//    N / P  → Station suivante / précédente
+//    + / =  → Volume +1  (0-21)
+//    -      → Volume -1
+//    M      → Mute / Unmute
+//    R      → Refresh metadata
+//    S      → Stop forcé
+//    ?      → Aide
 // ============================================================
 
 #include <M5Cardputer.h>
@@ -38,18 +36,15 @@
 #include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include "Audio.h"   // ESP32-audioI2S par schreibfaul1
+#include "Audio.h"
 
 // ============================================================
-//  PINS I2S — Cardputer ADV (Stamp-S3A / ES8311)
+//  PINS I2S — Cardputer ADV (Stamp-S3A)
 // ============================================================
-#define I2S_BCLK   41
-#define I2S_LRCLK  43
-#define I2S_DOUT   42
+#define I2S_BCLK  41
+#define I2S_LRC   43
+#define I2S_DOUT  42
 
-// ============================================================
-//  OBJET AUDIO GLOBAL
-// ============================================================
 Audio audio;
 
 // ============================================================
@@ -62,19 +57,19 @@ struct Station {
 };
 
 Station STATIONS[] = {
-    { "FIP",             "http://icecast.radiofrance.fr/fip-midfi.mp3",                    "https://api.radiofrance.fr/livemeta/pull/7" },
-    { "RP Main Mix",     "http://stream.radioparadise.com/mp3-128",                        "https://api.radioparadise.com/api/now_playing?block_id=0&format=json" },
-    { "RP Rock Mix",     "http://stream.radioparadise.com/rock-128",                       "https://api.radioparadise.com/api/now_playing?block_id=2&format=json" },
-    { "SomaFM Groove",   "http://ice.somafm.com/groovesalad-128-mp3",                      "" },
-    { "SomaFM Space",    "http://ice.somafm.com/spacestation-128-mp3",                     "" },
-    { "SomaFM 80s",      "http://ice.somafm.com/u80s-128-mp3",                             "" },
-    { "Nightride FM",    "https://stream.nightride.fm/nightride.mp3",                      "" },
-    { "Lofi Hip Hop",    "http://stream.zeno.fm/f3wvbbqmdg8uv",                            "" },
-    { "BluesWave",       "http://blueswave.radio:8000/blueswave",                          "" },
-    { "Blues Radio",     "http://198.58.98.83/stream/1/",                                  "" },
-    { "101 Smooth Jazz", "http://strm112.1.fm/smoothjazz_mobile_mp3",                      "" },
-    { "Chillout Lounge", "http://strm112.1.fm/chilloutlounge_mobile_mp3",                  "" },
-    { "Sensual Lounge",  "http://agnes.torontocast.com:8146/stream",                       "" },
+    { "FIP",             "http://icecast.radiofrance.fr/fip-midfi.mp3",               "https://api.radiofrance.fr/livemeta/pull/7" },
+    { "RP Main Mix",     "http://stream.radioparadise.com/mp3-128",                   "https://api.radioparadise.com/api/now_playing?block_id=0&format=json" },
+    { "RP Rock Mix",     "http://stream.radioparadise.com/rock-128",                  "https://api.radioparadise.com/api/now_playing?block_id=2&format=json" },
+    { "SomaFM Groove",   "http://ice.somafm.com/groovesalad-128-mp3",                 "" },
+    { "SomaFM Space",    "http://ice.somafm.com/spacestation-128-mp3",                "" },
+    { "SomaFM 80s",      "http://ice.somafm.com/u80s-128-mp3",                        "" },
+    { "Nightride FM",    "https://stream.nightride.fm/nightride.mp3",                 "" },
+    { "Lofi Hip Hop",    "http://stream.zeno.fm/f3wvbbqmdg8uv",                       "" },
+    { "BluesWave",       "http://blueswave.radio:8000/blueswave",                     "" },
+    { "Blues Radio",     "http://198.58.98.83/stream/1/",                             "" },
+    { "101 Smooth Jazz", "http://strm112.1.fm/smoothjazz_mobile_mp3",                 "" },
+    { "Chillout Lounge", "http://strm112.1.fm/chilloutlounge_mobile_mp3",             "" },
+    { "Sensual Lounge",  "http://agnes.torontocast.com:8146/stream",                  "" },
 };
 const int NUM_STATIONS = sizeof(STATIONS) / sizeof(STATIONS[0]);
 
@@ -84,7 +79,7 @@ const int NUM_STATIONS = sizeof(STATIONS) / sizeof(STATIONS[0]);
 int   currentStation = 0;
 int   listScrollTop  = 0;
 bool  isPlaying      = false;
-int   volume         = 12;    // 0-21
+int   volume         = 12;
 bool  isMuted        = false;
 bool  showHelp       = false;
 
@@ -122,19 +117,6 @@ unsigned long lastTickerMove = 0;
 
 // ============================================================
 //  LAYOUT 240 × 135
-//  ┌─────────────────────────────────┐ y=0
-//  │  HEADER  (titre + WiFi)         │ h=16
-//  ├─────────────────────────────────┤ y=16
-//  │  META    (titre morceau)        │ h=16
-//  ├─────────────────────────────────┤ y=32
-//  │  VOLUME  (jauge graphique)      │ h=12
-//  ├─────────────────────────────────┤ y=44
-//  │                                 │
-//  │  LISTE DES STATIONS             │ h=78
-//  │                                 │
-//  ├─────────────────────────────────┤ y=122
-//  │  HINT BAR (touches)             │ h=13
-//  └─────────────────────────────────┘ y=135
 // ============================================================
 #define W             240
 #define H             135
@@ -151,18 +133,17 @@ unsigned long lastTickerMove = 0;
 #define LIST_ITEM_H    13
 #define VISIBLE_ITEMS (LIST_H / LIST_ITEM_H)
 
-// ============================================================
-//  FORWARD DECLARATIONS
-// ============================================================
 void drawUI();
 void drawMetaBand();
 void startStream();
+void fetchMetadata();
 
 // ============================================================
-//  CALLBACKS ESP32-audioI2S (appelés par audio.loop())
+//  TRAITEMENT ICY / ID3 — commun aux deux styles de callback
 // ============================================================
-void audio_id3data(const char* info) {
+void handleStreamTitle(const char* info) {
     String s(info);
+    // ICY StreamTitle
     if (s.startsWith("StreamTitle:")) {
         String title = s.substring(12);
         title.trim();
@@ -173,8 +154,49 @@ void audio_id3data(const char* info) {
             nowPlaying = title.substring(sep + 3);
         } else {
             nowArtist  = "";
-            nowPlaying = (title.length() > 0) ? title
-                         : String(STATIONS[currentStation].name);
+            nowPlaying = title.length() > 0 ? title : String(STATIONS[currentStation].name);
+        }
+        tickerOffset = 0;
+        drawMetaBand();
+    }
+}
+
+// ============================================================
+//  CALLBACKS — NOUVEAU STYLE (ESP32-audioI2S v3.x récent)
+//  Enregistrés via Audio::audio_info_callback dans setup()
+// ============================================================
+void my_audio_info(Audio::msg_t m) {
+    // Toutes les infos passent ici dans la version récente
+    if (m.msg) handleStreamTitle(m.msg);
+}
+
+// ============================================================
+//  CALLBACKS — ANCIEN STYLE (ESP32-audioI2S v2.x / cyberwisk)
+//  Fonctions globales reconnues automatiquement
+// ============================================================
+void audio_info(const char* info) {
+    // silencieux
+}
+
+void audio_id3data(const char* info) {
+    handleStreamTitle(info);
+}
+
+void audio_showstation(const char* info) {
+    // Nom de la station ICY
+}
+
+void audio_showstreamtitle(const char* info) {
+    // Titre du stream ICY — certaines versions appellent ça
+    if (info && strlen(info) > 0) {
+        String title(info);
+        int sep = title.indexOf(" - ");
+        if (sep > 0) {
+            nowArtist  = title.substring(0, sep);
+            nowPlaying = title.substring(sep + 3);
+        } else {
+            nowArtist  = "";
+            nowPlaying = title;
         }
         tickerOffset = 0;
         drawMetaBand();
@@ -185,12 +207,10 @@ void audio_eof_stream(const char* info) {
     if (isPlaying) {
         statusMsg = "Reconnexion...";
         drawMetaBand();
-        delay(1500);
+        delay(2000);
         startStream();
     }
 }
-
-void audio_info(const char* info) { /* silencieux */ }
 
 // ============================================================
 //  VOLUME
@@ -200,7 +220,7 @@ void applyVolume() {
 }
 
 // ============================================================
-//  AUDIO stop / start
+//  AUDIO
 // ============================================================
 void stopStream() {
     audio.stopSong();
@@ -217,22 +237,14 @@ void startStream() {
     statusMsg = "Connexion...";
     drawUI();
 
-    // ⚡ CRITIQUE — ES8311 est un codec I2C
-    // M5Unified doit l'initialiser via I2C (GPIO8/9) AVANT l'I2S
-    // Sinon le codec reste muet même si l'I2S envoie des données
-    M5Cardputer.Speaker.begin();   // init ES8311 via I2C
-    delay(50);
-    M5Cardputer.Speaker.end();     // libère l'I2S pour ESP32-audioI2S
-    delay(50);
-
-    // Maintenant l'ES8311 est réveillé, ESP32-audioI2S peut prendre le relais
-    audio.setPinout(I2S_BCLK, I2S_LRCLK, I2S_DOUT);
+    audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     audio.setVolume(isMuted ? 0 : volume);
 
     if (audio.connecttohost(STATIONS[currentStation].url)) {
-        isPlaying  = true;
-        statusMsg  = "En lecture";
-        nowPlaying = STATIONS[currentStation].name;
+        isPlaying    = true;
+        statusMsg    = "En lecture";
+        nowPlaying   = STATIONS[currentStation].name;
+        nowArtist    = "";
         tickerOffset = 0;
         fetchMetadata();
     } else {
@@ -242,24 +254,24 @@ void startStream() {
 }
 
 // ============================================================
-//  METADATA
+//  METADATA JSON (FIP + Radio Paradise)
 // ============================================================
 void fetchMetadata() {
     if (strlen(STATIONS[currentStation].metaUrl) == 0) return;
     if (WiFi.status() != WL_CONNECTED) return;
     HTTPClient http;
     http.begin(STATIONS[currentStation].metaUrl);
-    http.addHeader("User-Agent", "JeffsWebRadio/1.9");
+    http.addHeader("User-Agent", "JeffsWebRadio/2.2");
     http.setTimeout(4000);
     if (http.GET() == 200) {
         JsonDocument doc;
         if (!deserializeJson(doc, http.getString())) {
             String sn = String(STATIONS[currentStation].name);
-            if (currentStation == 1) {  // FIP
+            if (currentStation == 0) {  // FIP
                 JsonObject now = doc["now"];
                 nowPlaying = now["firstLine"]["title"]  | sn;
                 nowArtist  = now["secondLine"]["title"] | String("");
-            } else {                    // Radio Paradise
+            } else {  // Radio Paradise
                 nowPlaying = doc["title"]  | sn;
                 nowArtist  = doc["artist"] | String("");
             }
@@ -277,7 +289,7 @@ void drawHeader() {
     M5.Lcd.fillRect(0, HDR_Y, W, HDR_H, COL_HDR_BG);
     M5.Lcd.setTextFont(1); M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(COL_HDR_FG, COL_HDR_BG);
-    M5.Lcd.drawString(">> JEFF'S WEB RADIO v2.0", 4, HDR_Y + 4);
+    M5.Lcd.drawString(">> JEFF'S WEB RADIO v2.2", 4, HDR_Y + 4);
     bool wok = (WiFi.status() == WL_CONNECTED);
     M5.Lcd.setTextColor(wok ? COL_PLAY : COL_STOP, COL_HDR_BG);
     M5.Lcd.drawString(wok ? "WiFi" : "NoWi", W - 30, HDR_Y + 4);
@@ -286,13 +298,11 @@ void drawHeader() {
 void drawMetaBand() {
     M5.Lcd.fillRect(0, META_Y, W, META_H, COL_META_BG);
     M5.Lcd.setTextFont(1); M5.Lcd.setTextSize(1);
-
     String full = isPlaying
-        ? (nowArtist.length() > 0 ? nowArtist + " - " + nowPlaying
-                                  : (nowPlaying.length() > 0 ? nowPlaying
-                                     : String(STATIONS[currentStation].name)))
+        ? (nowArtist.length() > 0
+            ? nowArtist + " - " + nowPlaying
+            : (nowPlaying.length() > 0 ? nowPlaying : String(STATIONS[currentStation].name)))
         : statusMsg;
-
     const int MAX_VIS = 30;
     String display = full;
     if ((int)full.length() > MAX_VIS) {
@@ -300,7 +310,6 @@ void drawMetaBand() {
         if (tickerOffset >= (int)(full.length() + 3)) tickerOffset = 0;
         display = loop.substring(tickerOffset, tickerOffset + MAX_VIS);
     }
-
     if (isPlaying) {
         M5.Lcd.setTextColor(COL_PLAY, COL_META_BG);
         M5.Lcd.drawString((millis() / 500) % 2 == 0 ? ">" : " ", 3, META_Y + 4);
@@ -314,7 +323,6 @@ void drawMetaBand() {
 void drawVolBar() {
     M5.Lcd.fillRect(0, VOL_Y, W, VOL_H, COL_VOL_BG);
     M5.Lcd.setTextFont(1); M5.Lcd.setTextSize(1);
-
     if (isMuted) {
         M5.Lcd.setTextColor(COL_STOP, COL_VOL_BG);
         M5.Lcd.drawString("MUTE", 4, VOL_Y + 2);
@@ -323,33 +331,25 @@ void drawVolBar() {
     } else {
         M5.Lcd.setTextColor(COL_VOL_FG, COL_VOL_BG);
         M5.Lcd.drawString("Vol", 3, VOL_Y + 2);
-
-        // Jauge graphique 0-21
         const int BX = 24, BW = 162, BH = 8, BY = VOL_Y + 2;
         int filled = (volume * BW) / 21;
         M5.Lcd.fillRect(BX, BY, BW, BH, COL_BAR_BG);
-        if (filled > 0)
-            M5.Lcd.fillRect(BX, BY, filled, BH, COL_VOL_FG);
-
+        if (filled > 0) M5.Lcd.fillRect(BX, BY, filled, BH, COL_VOL_FG);
         M5.Lcd.setTextColor(COL_TEXT, COL_VOL_BG);
         M5.Lcd.drawString(String(volume) + "/21", 191, VOL_Y + 2);
     }
 }
 
 void drawStationList() {
-    if (currentStation < listScrollTop)
-        listScrollTop = currentStation;
+    if (currentStation < listScrollTop) listScrollTop = currentStation;
     if (currentStation >= listScrollTop + VISIBLE_ITEMS)
         listScrollTop = currentStation - VISIBLE_ITEMS + 1;
-
     M5.Lcd.fillRect(0, LIST_Y, W, LIST_H, COL_BG);
-
     for (int i = 0; i < VISIBLE_ITEMS; i++) {
         int idx = listScrollTop + i;
         if (idx >= NUM_STATIONS) break;
-        int y   = LIST_Y + i * LIST_ITEM_H;
+        int y = LIST_Y + i * LIST_ITEM_H;
         bool sel = (idx == currentStation);
-
         if (sel) {
             M5.Lcd.fillRect(0, y, W - 4, LIST_ITEM_H, COL_SEL_BG);
             M5.Lcd.fillRect(0, y, 3, LIST_ITEM_H, COL_SEL_FG);
@@ -359,25 +359,20 @@ void drawStationList() {
         }
         M5.Lcd.setTextFont(1); M5.Lcd.setTextSize(1);
         M5.Lcd.drawString(String(idx + 1) + ". " + STATIONS[idx].name, 7, y + 2);
-
         if (sel && isPlaying) {
             M5.Lcd.fillRect(W - 50, y + 1, 46, LIST_ITEM_H - 2, COL_PLAY);
             M5.Lcd.setTextColor(COL_BG, COL_PLAY);
             M5.Lcd.drawString("ON AIR", W - 46, y + 2);
         }
     }
-
-    // Scrollbar
     if (NUM_STATIONS > VISIBLE_ITEMS) {
         int bH = max(4, LIST_H * VISIBLE_ITEMS / NUM_STATIONS);
-        int bY = LIST_Y + (LIST_H - bH) * listScrollTop
-                          / max(1, NUM_STATIONS - VISIBLE_ITEMS);
+        int bY = LIST_Y + (LIST_H - bH) * listScrollTop / max(1, NUM_STATIONS - VISIBLE_ITEMS);
         M5.Lcd.fillRect(W - 3, LIST_Y, 3, LIST_H, COL_BAR_BG);
         M5.Lcd.fillRect(W - 3, bY, 3, bH, COL_SCROLL);
     }
 }
 
-// Helpers hint bar
 static void hKey(int& x, const char* k) {
     int w = strlen(k) * 6 + 4;
     M5.Lcd.fillRect(x, HINT_Y + 1, w, HINT_H - 2, COL_KEY_BG);
@@ -395,23 +390,13 @@ void drawHintBar() {
     M5.Lcd.fillRect(0, HINT_Y, W, HINT_H, COL_HINT_BG);
     M5.Lcd.setTextFont(1); M5.Lcd.setTextSize(1);
     int x = 3;
-    if (!isPlaying) {
-        hKey(x, "ENT"); hLbl(x, ":play ");
-        hKey(x, "N");   hLbl(x, "/");
-        hKey(x, "P");   hLbl(x, ":nav ");
-        hKey(x, "+");   hLbl(x, "/");
-        hKey(x, "-");   hLbl(x, ":vol ");
-        hKey(x, "M");   hLbl(x, ":mute ");
-        hKey(x, "?");   hLbl(x, ":aide");
-    } else {
-        hKey(x, "ENT"); hLbl(x, ":stop ");
-        hKey(x, "N");   hLbl(x, "/");
-        hKey(x, "P");   hLbl(x, ":nav ");
-        hKey(x, "+");   hLbl(x, "/");
-        hKey(x, "-");   hLbl(x, ":vol ");
-        hKey(x, "M");   hLbl(x, ":mute ");
-        hKey(x, "?");   hLbl(x, ":aide");
-    }
+    hKey(x, "ENT"); hLbl(x, isPlaying ? ":stop " : ":play ");
+    hKey(x, "N");   hLbl(x, "/");
+    hKey(x, "P");   hLbl(x, ":nav ");
+    hKey(x, "+");   hLbl(x, "/");
+    hKey(x, "-");   hLbl(x, ":vol ");
+    hKey(x, "M");   hLbl(x, ":mute ");
+    hKey(x, "?");   hLbl(x, ":aide");
 }
 
 void drawHelpScreen() {
@@ -419,24 +404,22 @@ void drawHelpScreen() {
     M5.Lcd.setTextFont(1); M5.Lcd.setTextSize(1);
     M5.Lcd.fillRect(0, 0, W, HDR_H, COL_HDR_BG);
     M5.Lcd.setTextColor(COL_HDR_FG, COL_HDR_BG);
-    M5.Lcd.drawString("  AIDE — JEFF'S WEB RADIO v2.0", 4, 4);
-
+    M5.Lcd.drawString("  AIDE — JEFF'S WEB RADIO v2.2", 4, 4);
     struct { const char* k; const char* d; } lines[] = {
-        { "ENTER",   "Lancer / arreter la radio"    },
-        { "N",       "Station suivante"             },
-        { "P",       "Station precedente"           },
-        { "+ / =",   "Volume +1  (0 a 21)"          },
-        { "-",       "Volume -1"                    },
-        { "M",       "Mute / Unmute"                },
-        { "R",       "Recharger infos du morceau"   },
-        { "S",       "Stop force"                   },
-        { "?",       "Fermer cette aide"            },
+        { "ENTER",  "Lancer / arreter la radio"   },
+        { "N",      "Station suivante"            },
+        { "P",      "Station precedente"          },
+        { "+ / =",  "Volume +1  (0 a 21)"         },
+        { "-",      "Volume -1"                   },
+        { "M",      "Mute / Unmute"               },
+        { "R",      "Recharger infos du morceau"  },
+        { "S",      "Stop force"                  },
+        { "?",      "Fermer cette aide"           },
     };
     int n = sizeof(lines) / sizeof(lines[0]);
     for (int i = 0; i < n; i++) {
         int y = HDR_H + i * 13;
-        uint16_t bg = (i % 2 == 0) ? COL_HELP_BG
-                                   : M5.Lcd.color565(5, 28, 52);
+        uint16_t bg = (i % 2 == 0) ? COL_HELP_BG : M5.Lcd.color565(5, 28, 52);
         M5.Lcd.fillRect(0, y, W, 13, bg);
         M5.Lcd.fillRect(2, y + 1, 52, 11, COL_KEY_BG);
         M5.Lcd.setTextColor(COL_KEY_FG, COL_KEY_BG);
@@ -469,17 +452,14 @@ void startWiFiPortal() {
     M5.Lcd.drawString("Web Radio", 42, 34);
     M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(COL_SEL_FG, COL_BG);
-    M5.Lcd.drawString("v2.0  Cardputer ADV", 42, 66);
+    M5.Lcd.drawString("v2.2  Cardputer ADV", 42, 66);
     M5.Lcd.setTextColor(COL_DIM, COL_BG);
     M5.Lcd.drawString("WiFi AP: JeffsRadio-Setup", 24, 82);
     M5.Lcd.drawString("puis 192.168.4.1", 52, 96);
-
     WiFiManager wm;
-    wm.setAPStaticIPConfig(
-        IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+    wm.setAPStaticIPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
     wm.setConfigPortalTimeout(180);
     bool ok = wm.autoConnect("JeffsRadio-Setup");
-
     M5.Lcd.fillScreen(COL_BG); M5.Lcd.setTextSize(1);
     if (ok) {
         M5.Lcd.setTextColor(COL_PLAY, COL_BG);
@@ -501,50 +481,36 @@ void handleKeyboard() {
     M5Cardputer.update();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
     Keyboard_Class::KeysState st = M5Cardputer.Keyboard.keysState();
-
     if (st.enter) {
         showHelp = false;
         if (isPlaying) stopStream(); else startStream();
         drawUI();
         return;
     }
-
     for (auto k : st.word) {
         switch (k) {
             case 'n': case 'N':
                 if (isPlaying) stopStream();
                 currentStation = (currentStation + 1) % NUM_STATIONS;
-                drawStationList(); drawHintBar();
-                break;
+                drawStationList(); drawHintBar(); break;
             case 'p': case 'P':
                 if (isPlaying) stopStream();
                 currentStation = (currentStation - 1 + NUM_STATIONS) % NUM_STATIONS;
-                drawStationList(); drawHintBar();
-                break;
+                drawStationList(); drawHintBar(); break;
             case '+': case '=':
-                isMuted = false;
-                volume  = min(21, volume + 1);
-                applyVolume(); drawVolBar();
-                break;
+                isMuted = false; volume = min(21, volume + 1);
+                applyVolume(); drawVolBar(); break;
             case '-':
-                isMuted = false;
-                volume  = max(0, volume - 1);
-                applyVolume(); drawVolBar();
-                break;
+                isMuted = false; volume = max(0, volume - 1);
+                applyVolume(); drawVolBar(); break;
             case 'm': case 'M':
-                isMuted = !isMuted;
-                applyVolume(); drawVolBar();
-                break;
+                isMuted = !isMuted; applyVolume(); drawVolBar(); break;
             case 's': case 'S':
-                if (isPlaying) { stopStream(); drawUI(); }
-                break;
+                if (isPlaying) { stopStream(); drawUI(); } break;
             case 'r': case 'R':
-                if (isPlaying) { fetchMetadata(); drawMetaBand(); }
-                break;
+                if (isPlaying) { fetchMetadata(); drawMetaBand(); } break;
             case '?':
-                showHelp = !showHelp;
-                drawUI();
-                break;
+                showHelp = !showHelp; drawUI(); break;
         }
     }
 }
@@ -566,41 +532,44 @@ void setup() {
     M5.Lcd.drawString("Web Radio", 42, 40);
     M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(COL_DIM, COL_BG);
-    M5.Lcd.drawString("v2.0  Cardputer ADV", 42, 80);
+    M5.Lcd.drawString("v2.2  Cardputer ADV", 42, 80);
     M5.Lcd.setTextColor(COL_SEL_FG, COL_BG);
     M5.Lcd.drawString("by Jeff  (powered by Claude)", 20, 96);
     delay(1800);
 
     startWiFiPortal();
 
-    // Init ES8311 via M5Unified pour le réveiller
-    M5Cardputer.Speaker.begin();
-    delay(100);
-    M5Cardputer.Speaker.end();
-    delay(100);
+    // Enregistrement callback nouveau style (v3.x)
+    // Si la version installée ne supporte pas Audio::msg_t,
+    // cette ligne ne compilera pas → commenter si besoin
+    Audio::audio_info_callback = my_audio_info;
 
-    // Pré-configure l'audio (sans connecter)
-    audio.setPinout(I2S_BCLK, I2S_LRCLK, I2S_DOUT);
+    // Init audio pins
+    audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     audio.setVolume(volume);
 
     drawUI();
 }
 
 // ============================================================
-//  LOOP — audio.loop() est non-bloquant, pas de delay()
+//  LOOP
 // ============================================================
 void loop() {
     audio.loop();
     handleKeyboard();
 
+    // Ticker défilant
     if (isPlaying && millis() - lastTickerMove > 320) {
         tickerOffset++;
         drawMetaBand();
         lastTickerMove = millis();
     }
 
+    // Refresh metadata périodique
     if (isPlaying && millis() - lastMetaFetch > META_INTERVAL) {
         fetchMetadata();
         drawMetaBand();
     }
+
+    vTaskDelay(1);
 }
